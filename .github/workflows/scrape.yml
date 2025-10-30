@@ -1,4 +1,4 @@
-name: Scrape Latest Anime Updates
+name: Scrape Latest Anime Data
 
 on:
   schedule:
@@ -25,7 +25,6 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
       
-      # Langkah tambahan: Menginstal browser yang dibutuhkan Playwright
       - name: Install Playwright browsers
         run: python -m playwright install chromium --with-deps
 
@@ -35,5 +34,6 @@ jobs:
       - name: Commit and push if content changed
         uses: stefanzweifel/git-auto-commit-action@v5
         with:
-          commit_message: 'Update latest anime data'
-          file_pattern: 'latest_updates.json'
+          commit_message: 'Update anime data'
+          # Mengubah file_pattern untuk mencakup semua file JSON yang relevan
+          file_pattern: 'homepage.json details/*.json'
