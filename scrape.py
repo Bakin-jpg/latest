@@ -4,121 +4,165 @@ import re
 import json
 from urllib.parse import urljoin
 import time
+import os
 
-def parse_html_with_bs4(html_content, base_url):
-    """
-    Fungsi terpisah untuk mem-parsing HTML menggunakan BeautifulSoup.
-    """
+BASE_URL = 'https://kickass-anime.ru'
+
+def get_browser_page():
+    """Membuka browser dan halaman baru, lalu mengembalikannya."""
+    p = sync_playwright().start()
+    print("Meluncurkan browser Chromium...")
+    browser = p.chromium.launch(headless=True, args=["--no-sandbox"])
+    context = browser.new_context(
+        user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/94.0.4606.81 Safari/537.36',
+        viewport={'width': 1920, 'height': 1080}
+    )
+    page = context.new_page()
+    return p, browser, page
+
+def scroll_to_bottom(page):
+    """Mensimulasikan scroll ke bawah untuk memuat semua konten lazy load."""
+    print("Memulai scroll untuk memicu lazy loading...")
+    last_height = page.evaluate('document.body.scrollHeight')
+    while True:
+        page.evaluate('window.scrollTo(0, document.body.scrollHeight);')
+        time.sleep(2)
+        new_height = page.evaluate('document.body.scrollHeight')
+        if new_height == last_height:
+            break
+        last_height = new_height
+    print("Scroll selesai.")
+
+def scrape_homepage(page):
+    """Scrape daftar anime terbaru dari halaman utama."""
+    print(f"Membuka halaman utama: {BASE_URL}/")
+    page.goto(f"{BASE_URL}/", timeout=90000, wait_until='domcontentloaded')
+    page.wait_for_selector('.latest-update .show-item', timeout=60000)
+    
+    scroll_to_bottom(page)
+    
+    html_content = page.content()
     soup = BeautifulSoup(html_content, 'html.parser')
     latest_update_div = soup.find('div', class_='latest-update')
 
     if not latest_update_div:
-        print("Error: Div 'latest-update' tidak ditemukan.")
         return []
 
     results = []
     show_items = latest_update_div.find_all('div', class_='show-item')
-    print(f"Ditemukan {len(show_items)} item anime untuk di-parse.")
+    print(f"Ditemukan {len(show_items)} item di halaman utama.")
 
     for item in show_items:
         try:
             title_element = item.find('h2', class_='show-title').find('a')
-            title = title_element.get_text(strip=True) if title_element else 'N/A'
+            title = title_element.get_text(strip=True)
+            relative_link = title_element['href']
+            show_link = urljoin(BASE_URL, relative_link)
             
-            relative_link = title_element['href'] if title_element and 'href' in title_element.attrs else ''
-            show_link = urljoin(base_url, relative_link)
-
             image_div = item.find('div', class_='v-image__image')
-            image_url = 'N/A'
-            if image_div and 'style' in image_div.attrs:
-                style_attr = image_div['style']
-                match = re.search(r'url\("?(.+?)"?\)', style_attr)
-                if match:
-                    image_url = match.group(1)
-            
-            details_container = item.find('div', class_='d-flex')
-            details = []
-            if details_container:
-                chips = details_container.find_all('span', class_='v-chip__content')
-                details = [span.get_text(strip=True) for span in chips]
+            style_attr = image_div['style']
+            match = re.search(r'url\("?(.+?)"?\)', style_attr)
+            cover_image = match.group(1) if match else 'N/A'
 
-            show_data = {
+            results.append({
                 'title': title,
-                'show_link': show_link,
-                'cover_image': image_url,
-                'details': details
-            }
-            results.append(show_data)
-        except AttributeError:
+                'detail_page_url': show_link,
+                'cover_image': cover_image
+            })
+        except Exception:
             continue
-    
+            
     return results
 
-def scrape_with_playwright():
-    """
-    Menjalankan browser headless, melakukan scroll untuk memuat semua gambar,
-    lalu mem-parsing hasilnya.
-    """
-    base_url = 'https://kickass-anime.ru/'
-    results = []
+def scrape_anime_details(page, anime_url):
+    """Scrape detail dari satu halaman anime."""
+    print(f"Membuka halaman detail: {anime_url}")
+    page.goto(anime_url, timeout=90000, wait_until='domcontentloaded')
     
-    with sync_playwright() as p:
-        print("Meluncurkan browser Chromium...")
-        browser = p.chromium.launch(headless=True)
-        context = browser.new_context(
-            user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/94.0.4606.81 Safari/537.36',
-            # Meniru ukuran layar desktop untuk memastikan semua elemen terlihat
-            viewport={'width': 1920, 'height': 1080}
-        )
-        page = context.new_page()
+    # Tunggu elemen kunci dari halaman detail
+    page.wait_for_selector('.episode-list-container', timeout=60000)
+    scroll_to_bottom(page)
 
+    html_content = page.content()
+    soup = BeautifulSoup(html_content, 'html.parser')
+
+    # Ekstrak data
+    title = soup.find('h1', class_='text-h6').get_text(strip=True) if soup.find('h1', class_='text-h6') else 'N/A'
+    synopsis = soup.select_one('.v-card__text .text-caption').get_text(strip=True) if soup.select_one('.v-card__text .text-caption') else 'N/A'
+    
+    # URL Iframe Video untuk episode yang sedang aktif
+    iframe = soup.select_one('.player-container iframe.player')
+    iframe_url = iframe['src'] if iframe else 'N/A'
+    
+    # Daftar Episode
+    episodes = []
+    episode_items = soup.find_all('div', class_='episode-item')
+    print(f"Ditemukan {len(episode_items)} episode.")
+
+    for item in episode_items:
         try:
-            print(f"Membuka halaman: {base_url}")
-            page.goto(base_url, timeout=90000, wait_until='domcontentloaded')
+            # Tautan episode perlu dibangun dari card itu sendiri karena tidak ada tag <a>
+            card_link_tag = item.find('div', class_='v-card--link')
+            link_js = card_link_tag['onclick'] if card_link_tag and 'onclick' in card_link_tag.attrs else ''
+            relative_link = link_js.split("'")[1] if "'" in link_js else ''
             
-            print("Menunggu elemen pertama muncul...")
-            page.wait_for_selector('.latest-update .show-item', timeout=60000)
-            
-            # --- SOLUSI LAZY LOADING: MENSIMULASIKAN SCROLL ---
-            print("Memulai scroll untuk memicu lazy loading gambar...")
-            last_height = page.evaluate('document.body.scrollHeight')
-            while True:
-                # Scroll ke bagian bawah halaman
-                page.evaluate('window.scrollTo(0, document.body.scrollHeight);')
-                # Tunggu sebentar agar gambar sempat termuat
-                time.sleep(2)
-                # Cek apakah tinggi halaman sudah tidak bertambah (sudah di paling bawah)
-                new_height = page.evaluate('document.body.scrollHeight')
-                if new_height == last_height:
-                    break
-                last_height = new_height
-            print("Scroll selesai.")
-            # --- AKHIR SOLUSI ---
-            
-            print("Mengambil konten HTML final setelah scroll...")
-            html_content = page.content()
-            
-            # (Opsional) Simpan HTML untuk debug
-            # with open('debug_playwright_scrolled.html', 'w', encoding='utf-8') as f:
-            #     f.write(html_content)
+            episode_num_tag = item.find('span', class_='episode-badge')
+            episode_num = episode_num_tag.get_text(strip=True) if episode_num_tag else 'N/A'
 
-            results = parse_html_with_bs4(html_content, base_url)
+            thumbnail_div = item.find('div', class_='v-image__image')
+            thumbnail_url = 'N/A'
+            if thumbnail_div and 'style' in thumbnail_div.attrs:
+                style_attr = thumbnail_div['style']
+                match = re.search(r'url\("?(.+?)"?\)', style_attr)
+                thumbnail_url = match.group(1) if match else 'N/A'
 
-        except TimeoutError:
-            print("Timeout saat menunggu elemen. Mungkin situs lambat atau struktur berubah.")
-        except Exception as e:
-            print(f"Terjadi kesalahan saat menggunakan Playwright: {e}")
-            page.screenshot(path='error_screenshot.png')
-        finally:
-            print("Menutup browser...")
-            browser.close()
-            
-    return results
+            episodes.append({
+                'episode_number': episode_num,
+                'episode_url': urljoin(BASE_URL, relative_link),
+                'thumbnail_url': thumbnail_url
+            })
+        except Exception:
+            continue
+
+    return {
+        'title': title,
+        'source_url': anime_url,
+        'synopsis': synopsis,
+        'current_episode_iframe': iframe_url,
+        'total_episodes': len(episodes),
+        'episodes': episodes
+    }
 
 if __name__ == '__main__':
-    latest_updates = scrape_with_playwright()
+    # Pastikan direktori 'details' ada
+    os.makedirs('details', exist_ok=True)
+    
+    p, browser, page = get_browser_page()
 
-    with open('latest_updates.json', 'w', encoding='utf-8') as f:
-        json.dump(latest_updates, f, ensure_ascii=False, indent=2)
+    try:
+        # 1. Scrape halaman utama
+        homepage_data = scrape_homepage(page)
+        with open('homepage.json', 'w', encoding='utf-8') as f:
+            json.dump(homepage_data, f, ensure_ascii=False, indent=2)
+        print(f"Halaman utama berhasil di-scrape, {len(homepage_data)} anime ditemukan dan disimpan di homepage.json")
 
-    print(f"Scraping selesai. {len(latest_updates)} data disimpan di latest_updates.json")
+        # 2. Scrape detail untuk setiap anime
+        for anime in homepage_data:
+            anime_slug = anime['detail_page_url'].split('/')[-1]
+            file_path = f"details/{anime_slug}.json"
+            
+            try:
+                details = scrape_anime_details(page, anime['detail_page_url'])
+                with open(file_path, 'w', encoding='utf-8') as f:
+                    json.dump(details, f, ensure_ascii=False, indent=2)
+                print(f"Detail untuk '{anime['title']}' berhasil disimpan di {file_path}")
+            except Exception as e:
+                print(f"Gagal memproses detail untuk {anime['title']}: {e}")
+                # Jika gagal, buat file kosong atau error
+                with open(file_path, 'w', encoding='utf-8') as f:
+                    json.dump({"error": str(e), "url": anime['detail_page_url']}, f, indent=2)
+
+    finally:
+        browser.close()
+        p.stop()
+        print("Proses selesai.")
