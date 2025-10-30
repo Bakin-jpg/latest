@@ -1,5 +1,5 @@
 from playwright.sync_api import sync_playwright, TimeoutError
-from playwright_stealth import stealth_sync # <-- IMPORT BARU YANG PENTING
+from playwright_stealth import sync_stealth # <-- IMPORT YANG BENAR
 from bs4 import BeautifulSoup
 import re
 import json
@@ -23,13 +23,14 @@ def get_browser_page():
     page = context.new_page()
     
     # =======================================================
-    # === INI ADALAH KUNCI UTAMANYA: AKTIFKAN STEALTH MODE ===
+    # === PANGGIL FUNGSI DENGAN NAMA YANG BENAR ===
     print("Mengaktifkan mode stealth untuk menghindari deteksi bot...")
-    stealth_sync(page)
+    sync_stealth(page)
     # =======================================================
     
     return p, browser, page
 
+# Sisa dari skrip di bawah ini tidak perlu diubah, biarkan seperti di versi sebelumnya.
 def scrape_anime_details(page, anime_url):
     anime_slug = anime_url.split('/')[-1]
     file_path = os.path.join(DETAILS_DIR, f"{anime_slug}.json")
@@ -42,7 +43,6 @@ def scrape_anime_details(page, anime_url):
         page.click("a:has-text('Watch Now')", timeout=10000)
         print("Tombol 'Watch Now' diklik. Menunggu konten video...")
         
-        # Setelah klik, kita tunggu elemen pentingnya
         print("Menunggu iframe video player muncul...")
         page.wait_for_selector('.player-container iframe.player', timeout=30000)
         
@@ -101,7 +101,6 @@ def scrape_anime_details(page, anime_url):
         'total_episodes_found': total_episodes_on_page
     }
 
-    # Jika data penting masih kosong setelah semua usaha, anggap gagal
     if iframe_url == "N/A" or not sampled_episodes or sampled_episodes[0]['episode_url'].endswith('N/A'):
         raise Exception("Scraping berhasil tapi data penting (iframe/episode url) kosong. Kemungkinan deteksi bot aktif.")
 
