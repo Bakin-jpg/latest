@@ -7,18 +7,14 @@ import time
 import os
 
 # --- KONFIGURASI UNTUK TES ---
-# Ganti URL ini dengan URL anime lain jika perlu untuk testing
-TEST_ANIME_URL = 'https://kickass-anime.ru/one-piece-0948' 
+# URL yang butuh klik "Watch Now"
+TEST_ANIME_URL_NEEDS_CLICK = 'https://kickass-anime.ru/one-piece-0948' 
+# URL yang mungkin langsung menampilkan episode (ganti jika Anda punya contoh)
+TEST_ANIME_URL_DIRECT = 'https://kickass-anime.ru/towa-no-yuugure-098e' 
 BASE_URL = 'https://kickass-anime.ru'
-DETAILS_DIR = 'details_test' # Menggunakan folder terpisah agar tidak mengganggu data asli
-
-# ===================================================================
-# DI BAWAH INI ADALAH FUNGSI-FUNGSI DARI SKRIP ASLI ANDA
-# (Dengan perbaikan `wait_until='networkidle'`)
-# ===================================================================
+DETAILS_DIR = 'details_test'
 
 def get_browser_page():
-    """Membuka browser dan halaman baru."""
     p = sync_playwright().start()
     print("Meluncurkan browser Chromium...")
     browser = p.chromium.launch(headless=True, args=["--no-sandbox"])
@@ -30,23 +26,17 @@ def get_browser_page():
     return p, browser, page
 
 def scroll_to_bottom(page):
-    """Mensimulasikan scroll ke bawah untuk memuat semua konten."""
     print("Memulai scroll...")
     try:
-        last_height = page.evaluate('document.body.scrollHeight')
-        for _ in range(10): 
+        for _ in range(5):
             page.evaluate('window.scrollTo(0, document.body.scrollHeight);')
-            time.sleep(2) 
-            new_height = page.evaluate('document.body.scrollHeight')
-            if new_height == last_height:
-                break
-            last_height = new_height
+            time.sleep(1) 
         print("Scroll selesai.")
     except Exception as e:
         print(f"Error saat scroll: {e}")
 
 def parse_episode_item(item_soup):
-    """Mendapatkan data dari satu item episode."""
+    # Fungsi ini tidak diubah
     try:
         episode_num_tag = item_soup.find('span', class_='episode-badge')
         episode_num = episode_num_tag.get_text(strip=True) if episode_num_tag else 'N/A'
@@ -72,33 +62,60 @@ def parse_episode_item(item_soup):
         return None
 
 def scrape_anime_details(page, anime_url):
-    """Scrape detail anime (versi sederhana untuk tes)."""
     anime_slug = anime_url.split('/')[-1]
     file_path = os.path.join(DETAILS_DIR, f"{anime_slug}.json")
     
     print(f"Membuka halaman detail: {anime_url}")
-    # ==================================================
-    # === INI ADALAH PERBAIKAN UTAMANYA ===
-    # Mengubah 'domcontentloaded' menjadi 'networkidle'
     page.goto(anime_url, timeout=90000, wait_until='networkidle')
-    # ==================================================
 
-    print("Menunggu selector '.episode-list-container' muncul...")
-    page.wait_for_selector('.episode-list-container', timeout=60000)
-    print("Selector ditemukan! Halaman berhasil dimuat.")
+    episode_list_selector = ".episode-list-container"
+    is_list_visible = False
+
+    # =================================================================
+    # === LOGIKA BARU YANG LEBIH CERDAS ===
+    # =================================================================
+    try:
+        # 1. Coba tunggu daftar episode muncul langsung (dalam 10 detik)
+        print(f"Mencoba menemukan '{episode_list_selector}' secara langsung...")
+        page.wait_for_selector(episode_list_selector, state='visible', timeout=10000)
+        print("Daftar episode ditemukan secara langsung. Tidak perlu klik.")
+        is_list_visible = True
+    except TimeoutError:
+        # 2. Jika tidak muncul, berarti kita mungkin perlu mengklik "Watch Now"
+        print("Daftar episode tidak ditemukan. Mencari tombol 'Watch Now'...")
+        watch_now_button_selector = "a:has-text('Watch Now')"
+        try:
+            page.click(watch_now_button_selector, timeout=5000)
+            print("Tombol 'Watch Now' berhasil diklik. Menunggu daftar episode...")
+            # Setelah klik, beri waktu lebih lama (60 detik) untuk daftar episode muncul
+            page.wait_for_selector(episode_list_selector, state='visible', timeout=60000)
+            is_list_visible = True
+        except TimeoutError:
+            print("Tombol 'Watch Now' juga tidak ditemukan atau daftar episode tetap tidak muncul setelah diklik.")
+    
+    # 3. Jika setelah semua usaha daftar episode tidak ditemukan, lemparkan error
+    if not is_list_visible:
+        raise TimeoutError("Gagal menemukan daftar episode, baik secara langsung maupun setelah mencoba klik 'Watch Now'.")
+    # =================================================================
+
+    print("Selector '.episode-list-container' ditemukan! Halaman berhasil dimuat.")
     
     scroll_to_bottom(page)
     
     html_content = page.content()
     soup = BeautifulSoup(html_content, 'html.parser')
 
-    title = soup.find('h1', class_='text-h6').get_text(strip=True) if soup.find('h1', class_='text-h6') else 'N/A'
+    # Menggunakan selector yang lebih spesifik untuk judul di halaman video
+    title_element = soup.select_one('.v-card__title h1.text-h6, .anime-info-card .v-card__title span')
+    title = title_element.get_text(strip=True) if title_element else 'N/A'
+    
     all_episode_items_on_page = soup.find_all('div', class_='episode-item')
     total_episodes_on_page = len(all_episode_items_on_page)
+    print(f"Judul ditemukan: '{title}'")
     print(f"Total episode ditemukan di halaman: {total_episodes_on_page}")
 
     episodes = []
-    for item in all_episode_items_on_page[:5]: # Kita ambil 5 episode saja sebagai sampel
+    for item in all_episode_items_on_page[:5]:
         ep_data = parse_episode_item(item)
         if ep_data:
             episodes.append(ep_data)
@@ -115,42 +132,44 @@ def scrape_anime_details(page, anime_url):
 
     return f"File tes untuk '{title}' berhasil disimpan di {file_path}"
 
-# ===================================================================
-# BAGIAN UTAMA UNTUK MENJALANKAN TES
-# ===================================================================
+def run_single_test(browser, page, url_to_test):
+    """Fungsi pembantu untuk menjalankan tes pada satu URL."""
+    try:
+        result_message = scrape_anime_details(page, url_to_test)
+        print("\n" + "="*50)
+        print(f"✅ TES BERHASIL untuk: {url_to_test}")
+        print(result_message)
+        print("="*50 + "\n")
+        return True
+    except Exception as e:
+        print("\n" + "="*50)
+        print(f"❌ TES GAGAL untuk: {url_to_test}")
+        print(f"Detail error: {e}")
+        print("="*50 + "\n")
+        return False
 
 if __name__ == '__main__':
-    print(f"--- MEMULAI TES SCRAPER UNTUK SATU ANIME ---")
-    print(f"URL Target: {TEST_ANIME_URL}")
-    
     os.makedirs(DETAILS_DIR, exist_ok=True)
     p, browser, page = get_browser_page()
     
-    try:
-        result_message = scrape_anime_details(page, TEST_ANIME_URL)
-        print("\n" + "="*50)
-        print("✅ ✅ ✅ TES BERHASIL! ✅ ✅ ✅")
-        print(result_message)
-        print("="*50 + "\n")
+    all_tests_passed = True
+    
+    # Menjalankan tes untuk URL yang butuh klik
+    print("\n--- [TES 1] Menjalankan tes pada URL yang diperkirakan butuh klik 'Watch Now' ---")
+    if not run_single_test(browser, page, TEST_ANIME_URL_NEEDS_CLICK):
+        all_tests_passed = False
 
-    except TimeoutError as e:
-        print("\n" + "="*50)
-        print("❌ ❌ ❌ TES GAGAL! ❌ ❌ ❌")
-        print("Penyebab: Timeout. Halaman atau elemen tidak dapat dimuat tepat waktu.")
-        print(f"Detail error: {e}")
-        print("="*50 + "\n")
-        # Melempar kembali error agar jika dijalankan di Actions, prosesnya tetap gagal
-        raise e 
-        
-    except Exception as e:
-        print("\n" + "="*50)
-        print("❌ ❌ ❌ TES GAGAL! ❌ ❌ ❌")
-        print(f"Terjadi error yang tidak terduga: {e}")
-        print("="*50 + "\n")
-        raise e
+    # Menjalankan tes untuk URL yang mungkin langsung
+    print("\n--- [TES 2] Menjalankan tes pada URL yang diperkirakan langsung ---")
+    if not run_single_test(browser, page, TEST_ANIME_URL_DIRECT):
+        all_tests_passed = False
 
-    finally:
-        print("Menutup browser...")
-        browser.close()
-        p.stop()
-        print("Tes selesai.")
+    print("Menutup browser...")
+    browser.close()
+    p.stop()
+    print("Semua tes selesai.")
+
+    # Jika ada satu saja tes yang gagal, buat workflow gagal
+    if not all_tests_passed:
+        print("\nBeberapa tes gagal. Menghentikan workflow.")
+        exit(1)
