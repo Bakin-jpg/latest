@@ -8,7 +8,7 @@ import os
 
 BASE_URL = 'https://kickass-anime.ru'
 DETAILS_DIR = 'details'
-MAX_EPISODES_PER_RUN = 100  # Batas cicilan episode untuk anime panjang
+MAX_EPISODES_PER_RUN = 10  # Batas cicilan episode untuk anime panjang
 
 def get_browser_page():
     """Membuka browser dan halaman baru."""
