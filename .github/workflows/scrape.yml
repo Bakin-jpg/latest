@@ -1,17 +1,13 @@
-# Nama workflow yang akan muncul di tab Actions di GitHub
 name: Scrape Latest Anime Updates
 
-# Pemicu (trigger) untuk menjalankan workflow ini
 on:
   schedule:
     - cron: '0 */6 * * *'
   workflow_dispatch:
 
-# **TAMBAHAN PENTING: Memberikan izin tulis ke workflow**
 permissions:
   contents: write
 
-# Mendefinisikan pekerjaan (jobs) yang akan dijalankan
 jobs:
   scrape:
     runs-on: ubuntu-latest
@@ -29,10 +25,13 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
       
+      # Langkah tambahan: Menginstal browser yang dibutuhkan Playwright
+      - name: Install Playwright browsers
+        run: python -m playwright install chromium --with-deps
+
       - name: Run scraper
         run: python scrape.py
 
-      # Langkah ini sekarang akan berhasil karena sudah memiliki izin
       - name: Commit and push if content changed
         uses: stefanzweifel/git-auto-commit-action@v5
         with:
