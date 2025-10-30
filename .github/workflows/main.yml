@@ -1,29 +1,19 @@
-# Nama workflow yang akan muncul di tab Actions di GitHub
+# Nama workflow
 name: Scrape Latest Anime Data
 
-# Pemicu (trigger) untuk menjalankan workflow ini
+# Pemicu: Hanya berjalan jika dipicu manual dari tab Actions
 on:
-  # Menjalankan secara otomatis sesuai jadwal (cron job)
-  schedule:
-    # '0 */6 * * *' berarti berjalan setiap 6 jam.
-    - cron: '0 */6 * * *'
-  
-  # Memungkinkan Anda menjalankan workflow ini secara manual dari tab Actions
   workflow_dispatch:
 
-# Memberikan izin tulis ke workflow agar bisa melakukan commit dan push.
+# Izin yang dibutuhkan untuk commit dan push
 permissions:
   contents: write
 
-# Mendefinisikan pekerjaan (jobs) yang akan dijalankan
 jobs:
   scrape:
-    # Menggunakan mesin virtual Ubuntu terbaru
     runs-on: ubuntu-latest
-
-    # Langkah-langkah yang akan dieksekusi
     steps:
-      # Langkah 1: Mengunduh (checkout) kode dari repositori Anda
+      # Langkah 1: Mengunduh kode dari repositori
       - name: Check out repository
         uses: actions/checkout@v4
 
@@ -39,21 +29,32 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
       
-      # Langkah 4: Menginstal browser (Chromium) yang dibutuhkan oleh Playwright
+      # Langkah 4: Menginstal browser untuk Playwright
       - name: Install Playwright browsers
         run: python -m playwright install chromium --with-deps
 
-      # Langkah 5: Menjalankan skrip TES
-      - name: Run scraper TEST
+      # Langkah 5: Menjalankan skrip tes. 
+      # ID 'test_step' diberikan agar kita bisa memeriksa hasilnya.
+      # `continue-on-error: true` agar langkah selanjutnya tetap berjalan.
+      - name: Run scraper TEST with screenshot
+        id: test_step
         run: python test_scrape.py
+        continue-on-error: true
 
-      # Langkah 6: Melakukan commit dan push HANYA file hasil tes
+      # Langkah 6: Commit dan push file JSON HANYA JIKA TES BERHASIL
+      # `if: steps.test_step.outcome == 'success'` memastikan langkah ini hanya berjalan jika tes tidak gagal.
       - name: Commit and push TEST results
+        if: steps.test_step.outcome == 'success'
         uses: stefanzweifel/git-auto-commit-action@v5
         with:
-          # Pesan commit yang akan digunakan
           commit_message: 'Add test scrape results'
-          
-          # Pola file yang akan di-commit.
-          # Ini hanya akan menyimpan file .json dari folder details_test
           file_pattern: 'details_test/*.json'
+      
+      # Langkah 7: Mengunggah screenshot HANYA JIKA TES GAGAL
+      # `if: steps.test_step.outcome == 'failure'` memastikan langkah ini hanya berjalan jika tes gagal.
+      - name: Upload Debug Screenshot on Failure
+        if: steps.test_step.outcome == 'failure'
+        uses: actions/upload-artifact@v4
+        with:
+          name: debug-screenshot
+          path: debug_screenshot.png
