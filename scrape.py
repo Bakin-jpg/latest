@@ -1,4 +1,4 @@
-from playwright.sync_api import sync_playwright
+from playwright.sync_api import sync_playwright, TimeoutError
 from bs4 import BeautifulSoup
 import re
 import json
@@ -8,13 +8,12 @@ import time
 def parse_html_with_bs4(html_content, base_url):
     """
     Fungsi terpisah untuk mem-parsing HTML menggunakan BeautifulSoup.
-    Ini dipanggil setelah Playwright mendapatkan konten halaman yang sudah dirender.
     """
     soup = BeautifulSoup(html_content, 'html.parser')
     latest_update_div = soup.find('div', class_='latest-update')
 
     if not latest_update_div:
-        print("Error: Div 'latest-update' tidak ditemukan bahkan setelah render JS.")
+        print("Error: Div 'latest-update' tidak ditemukan.")
         return []
 
     results = []
@@ -57,7 +56,7 @@ def parse_html_with_bs4(html_content, base_url):
 
 def scrape_with_playwright():
     """
-    Menjalankan browser headless untuk membuka halaman, menunggu konten dinamis,
+    Menjalankan browser headless, melakukan scroll untuk memuat semua gambar,
     lalu mem-parsing hasilnya.
     """
     base_url = 'https://kickass-anime.ru/'
@@ -66,38 +65,49 @@ def scrape_with_playwright():
     with sync_playwright() as p:
         print("Meluncurkan browser Chromium...")
         browser = p.chromium.launch(headless=True)
-        
-        # Meniru browser Chrome di Windows 10
         context = browser.new_context(
-            user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/94.0.4606.81 Safari/537.36'
+            user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/94.0.4606.81 Safari/537.36',
+            # Meniru ukuran layar desktop untuk memastikan semua elemen terlihat
+            viewport={'width': 1920, 'height': 1080}
         )
         page = context.new_page()
 
         try:
             print(f"Membuka halaman: {base_url}")
-            # Menambah timeout agar tidak gagal di koneksi lambat
-            page.goto(base_url, timeout=90000) # Timeout 90 detik
+            page.goto(base_url, timeout=90000, wait_until='domcontentloaded')
             
-            print("Menunggu selector '.latest-update .show-item' muncul...")
-            # Ini adalah langkah kunci: menunggu elemen yang dibuat oleh JS muncul
-            page.wait_for_selector('.latest-update .show-item', timeout=60000) # Timeout 60 detik
+            print("Menunggu elemen pertama muncul...")
+            page.wait_for_selector('.latest-update .show-item', timeout=60000)
             
-            print("Elemen ditemukan. Memberi waktu sejenak untuk render penuh...")
-            time.sleep(5) # Jeda 5 detik untuk memastikan semua gambar/data termuat
-
-            print("Mengambil konten HTML halaman...")
+            # --- SOLUSI LAZY LOADING: MENSIMULASIKAN SCROLL ---
+            print("Memulai scroll untuk memicu lazy loading gambar...")
+            last_height = page.evaluate('document.body.scrollHeight')
+            while True:
+                # Scroll ke bagian bawah halaman
+                page.evaluate('window.scrollTo(0, document.body.scrollHeight);')
+                # Tunggu sebentar agar gambar sempat termuat
+                time.sleep(2)
+                # Cek apakah tinggi halaman sudah tidak bertambah (sudah di paling bawah)
+                new_height = page.evaluate('document.body.scrollHeight')
+                if new_height == last_height:
+                    break
+                last_height = new_height
+            print("Scroll selesai.")
+            # --- AKHIR SOLUSI ---
+            
+            print("Mengambil konten HTML final setelah scroll...")
             html_content = page.content()
             
-            # Simpan HTML untuk debug jika diperlukan
-            with open('debug_playwright.html', 'w', encoding='utf-8') as f:
-                f.write(html_content)
+            # (Opsional) Simpan HTML untuk debug
+            # with open('debug_playwright_scrolled.html', 'w', encoding='utf-8') as f:
+            #     f.write(html_content)
 
-            # Memanggil fungsi parsing
             results = parse_html_with_bs4(html_content, base_url)
 
+        except TimeoutError:
+            print("Timeout saat menunggu elemen. Mungkin situs lambat atau struktur berubah.")
         except Exception as e:
             print(f"Terjadi kesalahan saat menggunakan Playwright: {e}")
-            # Jika error, coba ambil screenshot untuk diagnosis
             page.screenshot(path='error_screenshot.png')
         finally:
             print("Menutup browser...")
