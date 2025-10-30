@@ -1,39 +1,71 @@
+# Nama workflow yang akan muncul di tab Actions di GitHub
 name: Scrape Latest Anime Data
 
+# Pemicu (trigger) untuk menjalankan workflow ini
 on:
+  # Menjalankan secara otomatis sesuai jadwal (cron job)
   schedule:
+    # Cron syntax: 'menit jam hari(bulan) bulan hari(minggu)'
+    # '0 */6 * * *' berarti berjalan setiap 6 jam (pada jam 00:00, 06:00, 12:00, 18:00 UTC).
     - cron: '0 */6 * * *'
+  
+  # Memungkinkan Anda menjalankan workflow ini secara manual dari tab Actions
   workflow_dispatch:
 
+# Memberikan izin tulis ke workflow agar bisa melakukan commit dan push ke repositori.
+# Ini adalah perbaikan untuk error "Permission denied".
 permissions:
   contents: write
 
+# Mendefinisikan pekerjaan (jobs) yang akan dijalankan
 jobs:
   scrape:
+    # Menggunakan mesin virtual Ubuntu terbaru yang disediakan GitHub
     runs-on: ubuntu-latest
+
+    # Langkah-langkah yang akan dieksekusi secara berurutan
     steps:
+      # Langkah 1: Mengunduh (checkout) kode dari repositori Anda ke mesin virtual
       - name: Check out repository
         uses: actions/checkout@v4
 
+      # Langkah 2: Menyiapkan lingkungan Python versi 3.10
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.10'
 
+      # Langkah 3: Membuat folder 'details' secara paksa.
+      # Ini adalah perbaikan untuk error "pathspec did not match any files" pada eksekusi pertama.
+      # Opsi '-p' memastikan tidak ada error jika folder sudah ada.
+      - name: Create details directory
+        run: mkdir -p details
+
+      # Langkah 4: Menginstal semua library Python yang dibutuhkan dari file requirements.txt
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
       
+      # Langkah 5: Menginstal browser (Chromium) yang dibutuhkan oleh Playwright
       - name: Install Playwright browsers
         run: python -m playwright install chromium --with-deps
 
+      # Langkah 6: Menjalankan skrip utama scraper
       - name: Run scraper
         run: python scrape.py
 
+      # Langkah 7: Melakukan commit dan push file JSON yang dihasilkan jika ada perubahan
       - name: Commit and push if content changed
         uses: stefanzweifel/git-auto-commit-action@v5
         with:
+          # Pesan commit yang akan digunakan
           commit_message: 'Update anime data'
-          # Mengubah file_pattern untuk mencakup semua file JSON yang relevan
+          
+          # Pola file yang akan di-commit.
+          # Ini akan mencakup homepage.json dan SEMUA file .json di dalam folder details.
           file_pattern: 'homepage.json details/*.json'
+          
+          # Opsi PENTING: Mencegah workflow gagal jika tidak ada file yang berubah.
+          # Perbaikan untuk error "Invalid status code: 128".
+          commit_options: '--allow-empty'
