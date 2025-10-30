@@ -37,7 +37,6 @@ def parse_episode_item(item_soup):
         episode_num_tag = item_soup.find('span', class_='episode-badge')
         episode_num = episode_num_tag.get_text(strip=True) if episode_num_tag else 'N/A'
         
-        # Logika baru untuk mendapatkan URL dari atribut 'onclick'
         card_link_tag = item_soup.find('div', class_='v-card--link')
         relative_link = ''
         if card_link_tag and 'onclick' in card_link_tag.attrs:
@@ -55,7 +54,7 @@ def parse_episode_item(item_soup):
             
         return {
             'episode_number': episode_num,
-            'episode_url': urljoin(BASE_URL, relative_link), # Menggunakan relative_link yang ditemukan
+            'episode_url': urljoin(BASE_URL, relative_link),
             'thumbnail_url': thumbnail_url
         }
     except Exception:
@@ -69,29 +68,37 @@ def scrape_anime_details(page, anime_url):
     page.goto(anime_url, timeout=90000, wait_until='networkidle')
 
     episode_list_selector = ".episode-list-container"
-    is_list_visible = False
+    is_content_loaded = False
     
     try:
         print(f"Mencoba menemukan '{episode_list_selector}' secara langsung...")
         page.wait_for_selector(episode_list_selector, state='visible', timeout=10000)
         print("Daftar episode ditemukan secara langsung.")
-        is_list_visible = True
+        is_content_loaded = True
     except TimeoutError:
-        print("Daftar episode tidak ditemukan. Mencari tombol 'Watch Now'...")
+        print("Daftar episode tidak ditemukan. Mencari dan mengklik 'Watch Now'...")
         watch_now_button_selector = "a:has-text('Watch Now')"
         try:
             page.click(watch_now_button_selector, timeout=5000)
-            print("Tombol 'Watch Now' berhasil diklik. Menunggu daftar episode...")
-            page.wait_for_selector(episode_list_selector, state='visible', timeout=60000)
-            is_list_visible = True
-        except TimeoutError:
-            print("Tombol 'Watch Now' juga tidak ditemukan atau daftar episode tetap tidak muncul.")
-    
-    if not is_list_visible:
-        raise TimeoutError("Gagal menemukan daftar episode.")
+            
+            # =================================================================
+            # === PERBAIKAN UTAMA: MENUNGGU ELEMEN SPESIFIK SETELAH KLIK ===
+            # =================================================================
+            print("Tombol diklik. Menunggu iframe dan item episode pertama muncul...")
+            # Tunggu iframe video player
+            page.wait_for_selector('.player-container iframe.player', timeout=30000)
+            # Tunggu item episode pertama (ini memastikan atribut 'onclick' sudah ada)
+            page.wait_for_selector('.episode-list-container .episode-item', timeout=30000)
+            print("Iframe dan item episode berhasil dimuat.")
+            # =================================================================
+            is_content_loaded = True
 
-    print("Selector '.episode-list-container' ditemukan! Halaman berhasil dimuat.")
+        except TimeoutError:
+            print("Gagal memuat konten utama setelah mengklik 'Watch Now'.")
     
+    if not is_content_loaded:
+        raise Exception("Gagal total menemukan konten utama (daftar episode & iframe).")
+
     scroll_to_bottom(page)
     
     html_content = page.content()
@@ -100,22 +107,15 @@ def scrape_anime_details(page, anime_url):
     title_element = soup.select_one('.v-card__title h1.text-h6, .anime-info-card .v-card__title span')
     title = title_element.get_text(strip=True) if title_element else 'N/A'
     
-    # =========================================================
-    # === MENAMBAHKAN KEMBALI PARSING SYNOPSIS DAN IFRAME ===
-    # =========================================================
-    # Mencari sinopsis di beberapa tempat yang mungkin
     synopsis_element = soup.select_one('div.text-caption, .v-card__text .text-caption')
     synopsis = synopsis_element.get_text(strip=True) if synopsis_element else 'N/A'
     
     iframe_element = soup.select_one('.player-container iframe.player')
     iframe_url = iframe_element['src'] if iframe_element else 'N/A'
-    # =========================================================
 
     all_episode_items_on_page = soup.find_all('div', class_='episode-item')
     total_episodes_on_page = len(all_episode_items_on_page)
-    print(f"Judul ditemukan: '{title}'")
-    print(f"Total episode ditemukan: {total_episodes_on_page}")
-
+    
     episodes = []
     for item in all_episode_items_on_page[:5]:
         ep_data = parse_episode_item(item)
@@ -125,8 +125,8 @@ def scrape_anime_details(page, anime_url):
     test_data = {
         'title': title,
         'source_url': anime_url,
-        'synopsis': synopsis,          # <-- DITAMBAHKAN
-        'current_iframe_url': iframe_url,   # <-- DITAMBAHKAN
+        'synopsis': synopsis,
+        'current_iframe_url': iframe_url,
         'sampled_episodes': episodes,
         'total_episodes_found': total_episodes_on_page
     }
@@ -151,7 +151,7 @@ if __name__ == '__main__':
         print(f"❌ TES GAGAL untuk: {TEST_ANIME_URL}")
         print(f"Detail error: {e}")
         print("="*50 + "\n")
-        exit(1) # Keluar dengan error code jika gagal
+        exit(1)
     finally:
         print("Menutup browser...")
         browser.close()
