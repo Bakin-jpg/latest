@@ -8,7 +8,8 @@ import os
 
 BASE_URL = 'https://kickass-anime.ru'
 DETAILS_DIR = 'details'
-MAX_EPISODES_PER_RUN = 10  # Batas cicilan episode untuk anime panjang
+# Batas cicilan diatur menjadi 10 episode per eksekusi
+MAX_EPISODES_PER_RUN = 10
 
 def get_browser_page():
     """Membuka browser dan halaman baru."""
@@ -27,9 +28,9 @@ def scroll_to_bottom(page):
     print("Memulai scroll...")
     try:
         last_height = page.evaluate('document.body.scrollHeight')
-        while True:
+        for _ in range(10): # Batasi scroll maksimal 10 kali untuk mencegah loop tak terbatas
             page.evaluate('window.scrollTo(0, document.body.scrollHeight);')
-            time.sleep(2)
+            time.sleep(2) # Jeda untuk memuat konten
             new_height = page.evaluate('document.body.scrollHeight')
             if new_height == last_height:
                 break
@@ -44,7 +45,6 @@ def parse_episode_item(item_soup):
         episode_num_tag = item_soup.find('span', class_='episode-badge')
         episode_num = episode_num_tag.get_text(strip=True) if episode_num_tag else 'N/A'
 
-        # Mencari tautan episode. Situs ini tidak menggunakan tag <a>, tapi event onclick.
         card_link_tag = item_soup.find('div', class_='v-card--link')
         relative_link = ''
         if card_link_tag and 'onclick' in card_link_tag.attrs:
@@ -69,7 +69,7 @@ def parse_episode_item(item_soup):
         return None
 
 def scrape_anime_details(page, anime_url):
-    """Scrape detail anime dengan logika update dan cicilan."""
+    """Scrape detail anime dengan logika update dan cicilan yang disempurnakan."""
     anime_slug = anime_url.split('/')[-1]
     file_path = os.path.join(DETAILS_DIR, f"{anime_slug}.json")
     
@@ -95,61 +95,55 @@ def scrape_anime_details(page, anime_url):
     all_episode_items_on_page = soup.find_all('div', class_='episode-item')
     total_episodes_on_page = len(all_episode_items_on_page)
     print(f"Total episode di halaman: {total_episodes_on_page}")
+    
+    num_existing_episodes = len(existing_data['episodes']) if existing_data and 'episodes' in existing_data else 0
 
-    # Logika Cek Pembaruan atau Scrape Baru
-    if existing_data and 'episodes' in existing_data and existing_data['total_episodes_scraped'] == total_episodes_on_page:
-        print("Tidak ada episode baru. Melewati.")
-        return None # Return None untuk menandakan tidak ada perubahan
+    if existing_data and num_existing_episodes == total_episodes_on_page:
+        print("Data sudah lengkap dan tidak ada episode baru. Melewati.")
+        return None
 
-    # Ambil metadata (Sinopsis, Judul, Iframe) - selalu di-update
     title = soup.find('h1', class_='text-h6').get_text(strip=True) if soup.find('h1', class_='text-h6') else 'N/A'
     synopsis = soup.select_one('.v-card__text .text-caption').get_text(strip=True) if soup.select_one('.v-card__text .text-caption') else 'N/A'
     iframe = soup.select_one('.player-container iframe.player')
     iframe_url = iframe['src'] if iframe else 'N/A'
-
-    final_data = {
-        'title': title,
-        'source_url': anime_url,
-        'synopsis': synopsis,
-        'current_episode_iframe': iframe_url,
-        'episodes': [],
-        'total_episodes_scraped': 0
+    
+    final_data = existing_data if existing_data else {
+        'title': title, 'source_url': anime_url, 'synopsis': synopsis,
+        'episodes': [], 'total_episodes_on_page': 0
     }
+    final_data.update({'title': title, 'synopsis': synopsis, 'current_episode_iframe': iframe_url, 'total_episodes_on_page': total_episodes_on_page})
+
+    episodes_to_scrape_html = []
     
-    episodes_to_scrape = all_episode_items_on_page
+    if existing_data and total_episodes_on_page > num_existing_episodes:
+        num_new_episodes = total_episodes_on_page - num_existing_episodes
+        print(f"Mode UPDATE: Ditemukan {num_new_episodes} episode baru.")
+        episodes_to_scrape_html = all_episode_items_on_page[:num_new_episodes]
     
-    if existing_data and 'episodes' in existing_data:
-        # Update mode: hanya scrape episode yang lebih baru
-        print("Mode update: Hanya mengambil episode baru.")
-        final_data['episodes'] = existing_data['episodes']
-        num_existing_episodes = len(existing_data['episodes'])
-        if total_episodes_on_page > num_existing_episodes:
-            # Episode baru ada di awal list, jadi kita ambil sejumlah perbedaannya
-            episodes_to_scrape = all_episode_items_on_page[:total_episodes_on_page - num_existing_episodes]
-    
-    elif total_episodes_on_page > MAX_EPISODES_PER_RUN:
-        # Mode Cicilan: scrape sebagian dari anime panjang yang baru
-        print(f"Mode cicilan: Anime panjang, mengambil {MAX_EPISODES_PER_RUN} episode pertama.")
-        episodes_to_scrape = all_episode_items_on_page[:MAX_EPISODES_PER_RUN]
+    elif not existing_data or num_existing_episodes < total_episodes_on_page:
+        start_index = num_existing_episodes
+        end_index = min(start_index + MAX_EPISODES_PER_RUN, total_episodes_on_page)
+        print(f"Mode CICILAN: Mengambil episode dari index {start_index} hingga {end_index-1}.")
+        episodes_from_web_reversed = list(reversed(all_episode_items_on_page))
+        episodes_to_scrape_html = episodes_from_web_reversed[start_index:end_index]
 
     newly_scraped_episodes = []
-    for item in episodes_to_scrape:
+    for item in episodes_to_scrape_html:
         ep_data = parse_episode_item(item)
         if ep_data:
             newly_scraped_episodes.append(ep_data)
-    
-    # Gabungkan episode baru dengan yang lama
-    final_data['episodes'] = newly_scraped_episodes + final_data['episodes']
-    final_data['total_episodes_scraped'] = len(final_data['episodes'])
+
+    if not (existing_data and total_episodes_on_page > num_existing_episodes):
+        newly_scraped_episodes.reverse()
+
+    final_data['episodes'] = newly_scraped_episodes + final_data.get('episodes', [])
     
     with open(file_path, 'w', encoding='utf-8') as f:
         json.dump(final_data, f, ensure_ascii=False, indent=2)
 
-    return f"Detail untuk '{title}' disimpan/diperbarui. Total episode tersimpan: {final_data['total_episodes_scraped']}/{total_episodes_on_page}"
-
+    return f"Detail untuk '{title}' disimpan/diperbarui. Total episode tersimpan: {len(final_data['episodes'])}/{total_episodes_on_page}"
 
 def scrape_homepage(page):
-    """Scrape daftar anime terbaru dari halaman utama."""
     print(f"Membuka halaman utama: {BASE_URL}/")
     page.goto(f"{BASE_URL}/", timeout=90000, wait_until='domcontentloaded')
     page.wait_for_selector('.latest-update .show-item', timeout=60000)
@@ -169,6 +163,7 @@ def scrape_homepage(page):
                 title = title_element.get_text(strip=True)
                 relative_link = title_element['href']
                 show_link = urljoin(BASE_URL, relative_link)
+                # Di homepage kita hanya butuh ini
                 results.append({'title': title, 'detail_page_url': show_link})
             except Exception: continue
     return results
@@ -181,12 +176,10 @@ if __name__ == '__main__':
     try:
         homepage_data = scrape_homepage(page)
         
-        # Simpan data homepage (ini selalu dioverwrite)
         with open('homepage.json', 'w', encoding='utf-8') as f:
             json.dump(homepage_data, f, ensure_ascii=False, indent=2)
         print(f"Homepage berhasil di-scrape, {len(homepage_data)} anime ditemukan.")
         
-        # Proses detail untuk setiap anime dari homepage
         for anime in homepage_data:
             try:
                 result_message = scrape_anime_details(page, anime['detail_page_url'])
